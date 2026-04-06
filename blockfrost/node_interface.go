@@ -97,6 +97,38 @@ type BlockfrostNode interface {
 		policyID string,
 		assetName []byte,
 	) (AssetInfo, error)
+
+	// Account returns stake-account information for the
+	// requested stake address.
+	Account(string) (AccountInfo, error)
+
+	// AccountAssociatedAddresses returns payment addresses
+	// associated with the requested stake address.
+	AccountAssociatedAddresses(
+		string,
+		PaginationParams,
+	) ([]AccountAssociatedAddressInfo, int, error)
+
+	// AccountDelegationHistory returns delegation history
+	// rows for the requested stake address.
+	AccountDelegationHistory(
+		string,
+		PaginationParams,
+	) ([]AccountDelegationHistoryInfo, int, error)
+
+	// AccountRegistrationHistory returns registration
+	// history rows for the requested stake address.
+	AccountRegistrationHistory(
+		string,
+		PaginationParams,
+	) ([]AccountRegistrationHistoryInfo, int, error)
+
+	// AccountRewardHistory returns reward history rows for
+	// the requested stake address.
+	AccountRewardHistory(
+		string,
+		PaginationParams,
+	) ([]AccountRewardHistoryInfo, int, error)
 }
 
 // ChainTipInfo holds chain tip data needed by the API.
@@ -297,4 +329,48 @@ type AssetInfo struct {
 	InitialMintTxHash string
 	MintOrBurnCount   int
 	OnchainMetadata   *any
+}
+
+// AccountInfo holds stake-account data needed by the API.
+type AccountInfo struct {
+	StakeAddress       string
+	Active             bool
+	ActiveEpoch        *int64
+	ControlledAmount   string
+	RewardsSum         string
+	WithdrawalsSum     string
+	ReservesSum        string
+	TreasurySum        string
+	WithdrawableAmount string
+	PoolID             *string
+}
+
+// AccountAssociatedAddressInfo holds a payment address
+// associated with a stake key.
+type AccountAssociatedAddressInfo struct {
+	Address string
+}
+
+// AccountDelegationHistoryInfo holds a stake-account
+// delegation history row.
+type AccountDelegationHistoryInfo struct {
+	ActiveEpoch int32
+	TxHash      string
+	Amount      string
+	PoolID      string
+}
+
+// AccountRegistrationHistoryInfo holds a stake-account
+// registration history row.
+type AccountRegistrationHistoryInfo struct {
+	TxHash string
+	Action string
+}
+
+// AccountRewardHistoryInfo holds a stake-account reward
+// history row.
+type AccountRewardHistoryInfo struct {
+	Epoch  int32
+	Amount string
+	PoolID string
 }
