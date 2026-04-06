@@ -929,6 +929,7 @@ func (a *NodeAdapter) Account(
 			err,
 		)
 	}
+
 	epochID, err := uint64ToInt64(
 		epoch.EpochId,
 		"account active epoch",
@@ -1072,6 +1073,13 @@ func (a *NodeAdapter) AccountDelegationHistory(
 				row.AddedSlot,
 				err,
 			)
+		}
+		activeEpoch, err := uint64ToInt32(
+			epoch.EpochId,
+			"delegation active epoch",
+		)
+		if err != nil {
+			return nil, err
 		}
 		ret = append(ret, AccountDelegationHistoryInfo{
 			ActiveEpoch: activeEpoch,
