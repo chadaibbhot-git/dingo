@@ -15,15 +15,24 @@
 package governance
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 
 	"github.com/blinklabs-io/dingo/database"
 	"github.com/blinklabs-io/dingo/database/models"
+	"github.com/blinklabs-io/dingo/ledger/eras"
 	"github.com/blinklabs-io/gouroboros/cbor"
+	gledger "github.com/blinklabs-io/gouroboros/ledger"
 	lcommon "github.com/blinklabs-io/gouroboros/ledger/common"
 	"github.com/blinklabs-io/gouroboros/ledger/conway"
 	ocommon "github.com/blinklabs-io/gouroboros/protocol/common"
 )
+
+type proposalSource interface {
+	Id() lcommon.Blake2b256
+	ProposalProcedures() []lcommon.ProposalProcedure
+}
 
 // ProcessProposals extracts governance proposals from a Conway-era
 // transaction and persists them to the database. Each proposal procedure in the
@@ -40,12 +49,30 @@ func ProcessProposals(
 	db *database.Database,
 	txn *database.Txn,
 ) error {
+	return persistGovernanceProposals(
+		tx,
+		point,
+		currentEpoch,
+		govActionLifetime,
+		db,
+		txn,
+	)
+}
+
+func persistGovernanceProposals(
+	tx proposalSource,
+	point ocommon.Point,
+	currentEpoch uint64,
+	govActionLifetime uint64,
+	db *database.Database,
+	txn *database.Txn,
+) error {
 	proposals := tx.ProposalProcedures()
 	if len(proposals) == 0 {
 		return nil
 	}
 
-	txHash := tx.Hash().Bytes()
+	txHash := tx.Id().Bytes()
 	if len(txHash) != 32 {
 		return fmt.Errorf("invalid tx hash length: got %d", len(txHash))
 	}
@@ -213,6 +240,16 @@ func ProcessVotes(
 					txn,
 				)
 				if err != nil {
+					if errors.Is(err, models.ErrGovernanceProposalNotFound) {
+						proposal, err = repairMissingGovernanceProposal(
+							actionId.TransactionId[:],
+							actionId.GovActionIdx,
+							db,
+							txn,
+						)
+					}
+				}
+				if err != nil {
 					return fmt.Errorf(
 						"lookup governance proposal for vote in tx %s: %w",
 						txHashForLog,
@@ -253,6 +290,132 @@ func ProcessVotes(
 	}
 
 	return nil
+}
+
+func repairMissingGovernanceProposal(
+	proposalTxHash []byte,
+	actionIndex uint32,
+	db *database.Database,
+	txn *database.Txn,
+) (*models.GovernanceProposal, error) {
+	txRecord, err := db.GetTransactionByHash(proposalTxHash, txn)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"lookup governance proposal tx %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	if txRecord == nil {
+		return nil, models.ErrGovernanceProposalNotFound
+	}
+	txBodyCbor, err := db.CborCache().ResolveTxCbor(proposalTxHash)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"resolve governance proposal tx body %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	txBody, err := gledger.NewTransactionBodyFromCbor(
+		uint(txRecord.Type),
+		txBodyCbor,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"decode governance proposal tx body %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	if !bytes.Equal(txBody.Id().Bytes(), proposalTxHash) {
+		return nil, fmt.Errorf(
+			"decoded governance proposal tx body hash mismatch for %s",
+			shortHash(proposalTxHash),
+		)
+	}
+	epochs, err := db.GetEpochs(txn)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"load epochs for governance proposal tx %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	epoch, err := epochForSlot(txRecord.Slot, epochs)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"lookup proposal epoch for tx %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	era := eras.GetEraById(epoch.EraId)
+	if era == nil {
+		return nil, fmt.Errorf(
+			"unknown era %d for governance proposal tx %s",
+			epoch.EraId,
+			shortHash(proposalTxHash),
+		)
+	}
+	pparams, err := db.GetPParams(
+		epoch.EpochId,
+		era.DecodePParamsFunc,
+		txn,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"load protocol params for governance proposal tx %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	conwayPParams, ok := pparams.(*conway.ConwayProtocolParameters)
+	if !ok {
+		return nil, fmt.Errorf(
+			"unexpected protocol params %T for governance proposal tx %s",
+			pparams,
+			shortHash(proposalTxHash),
+		)
+	}
+	if err := persistGovernanceProposals(
+		txBody,
+		ocommon.Point{
+			Slot: txRecord.Slot,
+			Hash: txRecord.BlockHash,
+		},
+		epoch.EpochId,
+		conwayPParams.GovActionValidityPeriod,
+		db,
+		txn,
+	); err != nil {
+		return nil, fmt.Errorf(
+			"rebuild governance proposal from tx %s: %w",
+			shortHash(proposalTxHash),
+			err,
+		)
+	}
+	proposal, err := db.GetGovernanceProposal(
+		proposalTxHash,
+		actionIndex,
+		txn,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return proposal, nil
+}
+
+func epochForSlot(
+	slot uint64,
+	epochs []models.Epoch,
+) (models.Epoch, error) {
+	for i := len(epochs) - 1; i >= 0; i-- {
+		if slot >= epochs[i].StartSlot {
+			return epochs[i], nil
+		}
+	}
+	return models.Epoch{}, fmt.Errorf("no epoch found for slot %d", slot)
 }
 
 // extractGovActionInfo extracts the action type, parent action ID, and policy
