@@ -676,6 +676,7 @@ func saveAccount(account *models.Account, db *gorm.DB) error {
 			Columns: []clause.Column{{Name: "staking_key"}},
 			DoUpdates: clause.AssignmentColumns(
 				[]string{
+					"added_slot",
 					"pool",
 					"drep",
 					"drep_type",
