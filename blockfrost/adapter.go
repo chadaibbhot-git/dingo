@@ -981,9 +981,6 @@ func (a *NodeAdapter) AccountAssociatedAddresses(
 		len(rows),
 	)
 	for _, row := range rows {
-		if len(row.PaymentKey) == 0 {
-			continue
-		}
 		addr, err := lcommon.NewAddressFromParts(
 			lcommon.AddressTypeKeyKey,
 			networkID,
