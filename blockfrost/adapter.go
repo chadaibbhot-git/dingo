@@ -20,7 +20,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 
 	"github.com/blinklabs-io/dingo/database"
@@ -1082,8 +1081,26 @@ func (a *NodeAdapter) AccountRegistrationHistory(
 		GetAccount(stakeKey, true, nil); err != nil {
 		return nil, 0, err
 	}
+	offset := (params.Page - 1) * params.Count
+	total, err := a.ledgerState.Database().
+		CountAccountRegistrationHistory(stakeKey, nil)
+	if err != nil {
+		return nil, 0, fmt.Errorf(
+			"count account registration history: %w",
+			err,
+		)
+	}
+	if offset >= total {
+		return []AccountRegistrationHistoryInfo{}, total, nil
+	}
 	rows, err := a.ledgerState.Database().
-		GetAccountRegistrationHistory(stakeKey, nil)
+		GetAccountRegistrationHistory(
+			stakeKey,
+			params.Count,
+			offset,
+			params.Order,
+			nil,
+		)
 	if err != nil {
 		return nil, 0, fmt.Errorf(
 			"get account registration history: %w",
@@ -1102,17 +1119,7 @@ func (a *NodeAdapter) AccountRegistrationHistory(
 			Action: row.Action,
 		})
 	}
-
-	if params.Order == PaginationOrderAsc {
-		slices.Reverse(ret)
-	}
-	total := len(ret)
-	start := (params.Page - 1) * params.Count
-	if start >= total {
-		return []AccountRegistrationHistoryInfo{}, total, nil
-	}
-	end := min(start+params.Count, total)
-	return ret[start:end], total, nil
+	return ret, total, nil
 }
 
 // AccountRewardHistory returns reward history rows for
