@@ -2017,6 +2017,9 @@ func (d *MetadataStorePostgres) SetTransactionBatched(
 	acc *BatchAccumulator,
 	txn types.Txn,
 ) error {
+	if acc == nil {
+		return fmt.Errorf("SetTransactionBatched: acc must not be nil")
+	}
 	txHash := tx.Hash().Bytes()
 	db, err := d.resolveDB(txn)
 	if err != nil {
