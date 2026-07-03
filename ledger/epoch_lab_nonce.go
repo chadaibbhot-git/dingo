@@ -16,6 +16,7 @@ package ledger
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 
@@ -38,11 +39,36 @@ func (ls *LedgerState) epochLabNonce(
 		if !errors.Is(err, models.ErrBlockNotFound) {
 			return nil, fmt.Errorf("lookup boundary block: %w", err)
 		}
+		ls.config.Logger.Info(
+			"bbhmm-trace: epochLabNonce block-not-found, using carriedLabNonce",
+			"epoch_start_slot", epochStartSlot,
+			"epoch_end_slot", epochEndSlot,
+			"carried_lab_nonce", hex.EncodeToString(carriedLabNonce),
+			"component", "ledger",
+		)
 		return cloneNonce(carriedLabNonce), nil
 	}
 	if lastBlock.Slot >= epochStartSlot && len(lastBlock.Hash) > 0 {
+		ls.config.Logger.Info(
+			"bbhmm-trace: epochLabNonce using lastBlock hash",
+			"epoch_start_slot", epochStartSlot,
+			"epoch_end_slot", epochEndSlot,
+			"last_block_slot", lastBlock.Slot,
+			"last_block_hash", hex.EncodeToString(lastBlock.Hash),
+			"expected_last_slot", epochEndSlot-1,
+			"slots_behind_expected_end", (epochEndSlot-1)-lastBlock.Slot,
+			"component", "ledger",
+		)
 		return cloneNonce(lastBlock.Hash), nil
 	}
+	ls.config.Logger.Info(
+		"bbhmm-trace: epochLabNonce falling back to normalizeCarriedLabNonce",
+		"epoch_start_slot", epochStartSlot,
+		"epoch_end_slot", epochEndSlot,
+		"last_block_slot", lastBlock.Slot,
+		"last_block_hash_len", len(lastBlock.Hash),
+		"component", "ledger",
+	)
 	return ls.normalizeCarriedLabNonce(txn, epochStartSlot, carriedLabNonce)
 }
 

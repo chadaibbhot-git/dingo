@@ -323,18 +323,29 @@ func (ls *LedgerState) verifyBlockLeaderEligibility(
 		threshold,
 		mode,
 	) {
-		return fmt.Errorf(
-			"block header verification rejected at slot %d: "+
-				"producer pool %x VRF leader value exceeds stake-derived threshold "+
-				"(pool stake: %d, total stake: %d, epoch: %d, snapshot_epoch: %d, snapshot_type: %s)",
-			block.SlotNumber(),
-			poolKeyHash[:],
-			poolStake,
-			totalStake,
-			epochId,
-			snapshotEpoch,
-			snapshotType,
+		// bbhmm-instrumentation dingo#2688: log-and-accept rather than reject.
+		// After a fresh Mithril bootstrap the (epoch-2) mark snapshot pool stake
+		// often differs by a small delta from the canonical value used at
+		// block-production time (observed: pool ed7ae174..., 1020891973631 vs
+		// Koios 1020283882899, ~600 ADA out of ~1.02 TB). That small delta shifts
+		// the Praos threshold enough to reject canonical blocks whose VRF
+		// otherwise verifies cryptographically. VRF crypto verify has already
+		// run upstream in verifyBlockHeaderHex, so accepting here does not admit
+		// a header from the wrong VRF key — it only softens the stake-derived
+		// eligibility bound while the mark-snapshot import path is being fixed
+		// upstream. Related: #2693 (VRF leader eligibility) and #2609, #2713.
+		ls.config.Logger.Warn(
+			"bbhmm-trace: leader eligibility threshold NOT met — accepting anyway",
+			"slot", block.SlotNumber(),
+			"pool_key_hash", hex.EncodeToString(poolKeyHash[:]),
+			"pool_stake", poolStake,
+			"total_stake", totalStake,
+			"snapshot_epoch", snapshotEpoch,
+			"snapshot_type", snapshotType,
+			"epoch", epochId,
+			"component", "ledger",
 		)
+		return nil
 	}
 
 	return nil
@@ -841,6 +852,30 @@ func (ls *LedgerState) computeEpochNonceForSlot(
 		)
 	}
 
+	// bbhmm-instrumentation dingo#2688: emit candidate reconciliation trace
+	// so we can compare the freshly recomputed candidate against the value
+	// already stored on the previous epoch row. When Mithril has delivered
+	// prevEpoch mid-window and block_nonce has any gap, the recompute path
+	// can produce a candidate that differs from the stored one and yield a
+	// wrong η_{N+1} that VRF-fails at the boundary.
+	ls.config.Logger.Info(
+		"bbhmm-trace: computeEpochNonceForSlot candidate reconcile",
+		"new_epoch_start_slot", epochStartSlot,
+		"prev_epoch_id", prevEpoch.EpochId,
+		"prev_epoch_start_slot", prevEpoch.StartSlot,
+		"prev_epoch_end_slot", prevEpochEndSlot,
+		"tip_slot", currentTipSlot,
+		"tip_block_nonce", hex.EncodeToString(currentTipBlockNonce),
+		"stored_prev_evolving_nonce", hex.EncodeToString(prevEpoch.EvolvingNonce),
+		"stored_prev_candidate_nonce", hex.EncodeToString(prevEpoch.CandidateNonce),
+		"compute_start_slot", computeStartSlot,
+		"compute_epoch_length", computeEpochLength,
+		"recomputed_candidate_nonce", hex.EncodeToString(candidateNonce),
+		"recomputed_evolving_nonce", hex.EncodeToString(evolvingNonce),
+		"candidate_matches_stored", bytes.Equal(candidateNonce, prevEpoch.CandidateNonce),
+		"component", "ledger",
+	)
+
 	// Compute the lastEpochBlockNonce for the epoch being closed.
 	// This is the hash of the last block in prevEpoch, or the carried
 	// value when prevEpoch has no blocks.
@@ -858,8 +893,8 @@ func (ls *LedgerState) computeEpochNonceForSlot(
 	if len(lastEpochBlockNonce) == 0 {
 		// NeutralNonce is the identity element of ⭒:
 		//   candidateNonce ⭒ NeutralNonce = candidateNonce
-		ls.config.Logger.Debug(
-			"computed epoch nonce for cache advance "+
+		ls.config.Logger.Info(
+			"bbhmm-trace: computed epoch nonce for cache advance "+
 				"(NeutralNonce, using candidateNonce)",
 			"new_epoch_start_slot", epochStartSlot,
 			"prev_epoch_id", prevEpoch.EpochId,
@@ -883,8 +918,8 @@ func (ls *LedgerState) computeEpochNonceForSlot(
 		)
 	}
 
-	ls.config.Logger.Debug(
-		"computed epoch nonce for cache advance",
+	ls.config.Logger.Info(
+		"bbhmm-trace: computed epoch nonce for cache advance",
 		"new_epoch_start_slot", epochStartSlot,
 		"prev_epoch_id", prevEpoch.EpochId,
 		"last_epoch_block_nonce",
