@@ -776,10 +776,6 @@ func (c *forgerMovingTipSlotClock) PrimaryChainTip() ocommon.Point {
 	return ocommon.Point{Slot: c.chainTipSlot, Hash: c.chainTipHash}
 }
 
-func (*forgerMovingTipSlotClock) UpstreamAdmittedTipSlot() uint64 {
-	return 0
-}
-
 func (c *forgerMovingTipSlotClock) ChainTipHash() []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
