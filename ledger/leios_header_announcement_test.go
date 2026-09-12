@@ -108,13 +108,18 @@ func announcingHeader(
 // half of the crypto gate on the header stream.
 //
 // chainsyncHeaderCryptoPolicy admits a roll-forward header without verifying
-// its VRF/KES on three paths: live validation not yet enabled, a slot covered
-// by an imported Mithril snapshot, and no cached epoch nonce for the slot
-// (verification deferred to blockfetch). All three reach
-// chain.AddBlockHeader, not AddVerifiedBlockHeader. Announcing such a header
-// would let a chainsync peer make this node sign and publish a BLS vote for a
-// ranking block it never authenticated, taking the (slot, voterId) pair the
-// honest block's own vote needs.
+// its VRF/KES on two paths: a slot covered by an imported Mithril snapshot
+// (trustedWithoutVerification), and no cached epoch nonce for the slot
+// (verification deferred to blockfetch, untrusted). Both reach
+// chain.AddBlockHeader, not AddVerifiedBlockHeader, so neither may announce.
+// Announcing such a header would let a chainsync peer make this node sign and
+// publish a BLS vote for a ranking block it never authenticated, taking the
+// (slot, voterId) pair the honest block's own vote needs.
+//
+// A third path used to exist -- live validation not yet enabled -- but #4101
+// (47884fd1, "fail closed on validation and forging configuration") removed
+// that branch from the policy, so the unverified admission the handler can
+// still take is enumerated from the two remaining ones.
 func TestChainsyncHeaderAdmissionAnnouncesOnlyWhenCryptoVerified(
 	t *testing.T,
 ) {
@@ -124,38 +129,73 @@ func TestChainsyncHeaderAdmissionAnnouncesOnlyWhenCryptoVerified(
 	)
 	point := ocommon.NewPoint(header.slot, header.hash.Bytes())
 
-	// The fixture's ledger has validation not yet enabled, so the policy
-	// returns trustedWithoutVerification and the handler takes the
-	// AddBlockHeader branch -- the real end-to-end unverified admission.
-	t.Run("unverified admission is queued, not announced", func(t *testing.T) {
-		fixture := newHeaderStreamLedger(t)
-		verifyNow, trusted := fixture.ls.chainsyncHeaderCryptoPolicy(
-			header.slot,
-		)
-		require.False(t, verifyNow, "fixture must exercise the unverified path")
-		require.True(t, trusted)
+	// Both surviving unverified-admission paths take the handler's
+	// AddBlockHeader branch -- the real end-to-end unverified admission --
+	// and neither may publish onto the chain.header stream. The trusted
+	// (Mithril) path is the more dangerous of the two: it also advances
+	// shared sync state, so it must be pinned explicitly.
+	for _, tc := range []struct {
+		name string
+		// setup puts the fixture's ledger into the state that makes
+		// chainsyncHeaderCryptoPolicy take this path.
+		setup       func(ls *LedgerState)
+		wantTrusted bool
+	}{
+		{
+			// A Mithril certificate covers the slot, so the header is
+			// trusted without re-verifying VRF/KES.
+			name: "mithril-covered admission is queued, not announced",
+			setup: func(ls *LedgerState) {
+				ls.mithrilLedgerSlot = header.slot + 1
+			},
+			wantTrusted: true,
+		},
+		{
+			// No cached epoch nonce for the slot, so crypto verification
+			// is deferred to blockfetch and the header is not trusted.
+			name: "deferred-nonce admission is queued, not announced",
+			setup: func(ls *LedgerState) {
+				// The bare fixture already has no cached epoch nonce.
+			},
+			wantTrusted: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newHeaderStreamLedger(t)
+			tc.setup(fixture.ls)
 
-		require.NoError(
-			t,
-			fixture.ls.handleEventChainsyncBlockHeader(ChainsyncEvent{
-				ConnectionId: fixture.connId,
-				BlockHeader:  header,
-				Point:        point,
-				Tip: ochainsync.Tip{
-					Point:       ocommon.NewPoint(60001, []byte("tip-1")),
-					BlockNumber: 60001,
-				},
-			}),
-		)
-		require.Equal(t, 1, fixture.ls.chain.HeaderCount())
+			verifyNow, trusted := fixture.ls.chainsyncHeaderCryptoPolicy(
+				header.slot,
+			)
+			require.False(
+				t,
+				verifyNow,
+				"fixture must exercise the unverified path",
+			)
+			require.Equal(t, tc.wantTrusted, trusted)
 
-		testutil.RequireNoReceive(
-			t,
-			fixture.ch,
-			500*time.Millisecond,
-			"an unverified header must not arm a vote",
-		)
-	})
+			require.NoError(
+				t,
+				fixture.ls.handleEventChainsyncBlockHeader(ChainsyncEvent{
+					ConnectionId: fixture.connId,
+					BlockHeader:  header,
+					Point:        point,
+					Tip: ochainsync.Tip{
+						Point:       ocommon.NewPoint(60001, []byte("tip-1")),
+						BlockNumber: 60001,
+					},
+				}),
+			)
+			require.Equal(t, 1, fixture.ls.chain.HeaderCount())
+
+			testutil.RequireNoReceive(
+				t,
+				fixture.ch,
+				500*time.Millisecond,
+				"an unverified header must not arm a vote",
+			)
+		})
+	}
 
 	// The verified branch of the same handler is one call:
 	// ls.chain.AddVerifiedBlockHeader(e.BlockHeader). It is driven directly
